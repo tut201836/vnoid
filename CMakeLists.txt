@@ -12,6 +12,7 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(controller)
+add_subdirectory(controller/my_controller)
 
 if(VNOID_BUILD_CNOID)
 	add_subdirectory(plugin)

@@ -29,6 +29,13 @@ public:
 	double  moment_ctrl_damping;       ///< damping coefficient of moment damping control
 	double  moment_ctrl_gain;          ///< gain of moment damping control
 	double  moment_ctrl_limit;         ///< movement limit of moment damping control
+	double contact_force_threshold_on  = 1.0;  // 接触開始の閾値
+	double contact_force_threshold_off = 0.5;  // 接触解除の閾値
+	double friction_ratio_threshold = 0.5;     // 水平方向の力の割合の上限
+	
+	// 前回の力（スリップ検出用）
+	Vector3 prev_force[2];
+
 	
 	/* @brief feedback gain
 	 * 
