@@ -144,7 +144,6 @@ void MyRobot::Init(SimpleControllerIO* io){
     stabilizer.base_tilt_rate          = 0.0;//5.0;
     stabilizer.base_tilt_damping_p     = 0.0;//100.0;
     stabilizer.base_tilt_damping_d     = 0.0;//50.0;
-    stabilizer.InitializeState(centroid, base, foot, param);
 
 }
 

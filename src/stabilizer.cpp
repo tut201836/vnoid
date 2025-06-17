@@ -19,14 +19,14 @@ Stabilizer::Stabilizer(){
 	// default gain setting
 	orientation_ctrl_gain_p = 10.0;
 	orientation_ctrl_gain_d = 10.0;
-	dcm_ctrl_gain           =  1.0;
+	dcm_ctrl_gain           =  2.0;
 
 	base_tilt_rate = 0.0;
 	base_tilt_damping_p = 0.1;
 	base_tilt_damping_d = 0.1;
 
 	//
-	recovery_moment_limit = 300.0;
+	recovery_moment_limit = 100.0;
 	dcm_deviation_limit   = 0.3;
 	
     for(int i = 0; i < 2; i++){
@@ -36,71 +36,37 @@ Stabilizer::Stabilizer(){
 
 }
 
-void Stabilizer::CalcZmp(const Param& param, Centroid& centroid, vector<Foot>& foot) {
-    const double eps = 1e-6;
+void Stabilizer::CalcZmp(const Param& param, Centroid& centroid, vector<Foot>& foot){
+    // get actual force from the sensor
+	for(int i = 0; i < 2; i++){
+		// set contact state
+		foot[i].contact = (foot[i].force.z() >= min_contact_force);
 
-    for (int i = 0; i < 2; i++) {
-        const Vector3& f = foot[i].force;
-        const Vector3& m = foot[i].moment;
+		// measure continuous contact duration
+		if(foot[i].contact){
+			foot[i].zmp = Vector3(-foot[i].moment.y()/foot[i].force.z(), foot[i].moment.x()/foot[i].force.z(), 0.0);
+		}
+		else{
+			foot[i].zmp = Vector3(0.0, 0.0, 0.0);
+		}
+	}
 
-        // 足裏のZ軸ベクトル（地面法線）
-        Vector3 foot_z = foot[i].ori_ref.toRotationMatrix().col(2);
-
-        // 法線方向の力（傾斜面に対応）
-        double fz_local = foot_z.dot(f);
-        double horiz_force_ratio = std::sqrt(f.x() * f.x() + f.y() * f.y()) / (fz_local + eps);
-
-        // ヒステリシス付き接触判定 + 摩擦比による制約
-        if (!foot[i].contact &&
-            fz_local > contact_force_threshold_on &&
-            horiz_force_ratio < friction_ratio_threshold) {
-            foot[i].contact = true;
-        } else if (foot[i].contact &&
-                   (fz_local < contact_force_threshold_off ||
-                    horiz_force_ratio > friction_ratio_threshold)) {
-            foot[i].contact = false;
-        }
-
-        // スリップ検出（急激な法線力の減少）
-        double prev_fz_local = foot[i].ori_ref.toRotationMatrix().col(2).dot(prev_force[i]);
-        double fz_rate = fz_local - prev_fz_local;
-        if (fz_rate < -30.0) {
-            foot[i].contact = false;
-        }
-        prev_force[i] = f;
-
-        // モーメントからZMP（ワールド座標）を計算
-        Vector3 torque = m - foot[i].pos_ref.cross(f);
-        Vector3 zmp_world = foot[i].pos_ref + foot_z.cross(torque) / (fz_local + eps);
-
-        // ローカルZMPに変換
-        if (foot[i].contact) {
-            foot[i].zmp = foot[i].ori_ref.conjugate() * (zmp_world - foot[i].pos_ref);
-        } else {
-            foot[i].zmp = Vector3(0.0, 0.0, 0.0);
-        }
-    }
-
-    // 両足とも非接地
-    if (!foot[0].contact && !foot[1].contact) {
-        foot[0].balance = foot[1].balance = 0.5;
-        centroid.zmp = Vector3(0.0, 0.0, 0.0);
-    } else {
-        // 接地足の法線方向力に基づくZMP重み計算
-        double fz0 = std::max(0.0, foot[0].ori_ref.toRotationMatrix().col(2).dot(foot[0].force));
-        double fz1 = std::max(0.0, foot[1].ori_ref.toRotationMatrix().col(2).dot(foot[1].force));
-        double fsum = fz0 + fz1 + eps;
-
-        foot[0].balance = fz0 / fsum;
-        foot[1].balance = fz1 / fsum;
-
-        // ZMPをワールド座標で加重平均
-        centroid.zmp =
-            foot[0].balance * (foot[0].pos_ref + foot[0].ori_ref * foot[0].zmp) +
-            foot[1].balance * (foot[1].pos_ref + foot[1].ori_ref * foot[1].zmp);
-    }
+	// both feet not in contact
+	if(!foot[0].contact && !foot[1].contact){
+		foot[0].balance = 0.5;
+		foot[1].balance = 0.5;
+		centroid.zmp = Vector3(0.0, 0.0, 0.0);
+	}
+	else{
+		double f0 = std::max(0.0, foot[0].force.z());
+		double f1 = std::max(0.0, foot[1].force.z());
+		foot[0].balance = f0/(f0 + f1);
+		foot[1].balance = f1/(f0 + f1);
+		centroid.zmp =
+			     (foot[0].balance) * (foot[0].pos_ref + foot[0].ori_ref * foot[0].zmp)
+	           + (foot[1].balance) * (foot[1].pos_ref + foot[1].ori_ref * foot[1].zmp);
+	}
 }
-
 
 void Stabilizer::CalcForceDistribution(const Param& param, Centroid& centroid, vector<Foot>& foot){
 	// switch based on contact state
@@ -250,46 +216,6 @@ void Stabilizer::CalcDcmDynamics(const Timer& timer, const Param& param, const B
 	centroid.com_pos_ref += centroid.com_vel_ref*timer.dt;
 }
 
-void Stabilizer::InitializeState(Centroid& centroid, Base& base, std::vector<Foot>& foot, const Param& param) {
-    double h = param.com_height;
-    double T = param.T;
-
-    // --- 足位置の平均でZMP/CoM初期化（両足接地仮定） ---
-    Vector3 avg_foot_pos = 0.5 * (foot[0].pos_ref + foot[1].pos_ref);
-    Vector3 com_pos = avg_foot_pos + Vector3(0.0, 0.0, h);
-
-    centroid.com_pos_ref = com_pos;
-    centroid.com_vel_ref = Vector3::Zero();
-    centroid.dcm_ref     = com_pos;
-    centroid.dcm_target  = centroid.dcm_ref;
-    centroid.zmp_ref     = avg_foot_pos;
-    centroid.zmp_target  = centroid.zmp_ref;
-
-    // --- 足の状態初期化 ---
-    for (int i = 0; i < 2; ++i) {
-        foot[i].contact = true;
-        foot[i].contact_ref = true;
-        foot[i].force = Vector3(0.0, 0.0, param.total_mass * param.gravity / 2.0);
-        foot[i].moment = Vector3::Zero();
-        foot[i].force_ref = foot[i].force;
-        foot[i].moment_ref = Vector3::Zero();
-    }
-
-    // --- Base姿勢初期化 ---
-    base.angle = Vector3::Zero();
-    base.angvel = Vector3::Zero();
-    base.angle_ref = Vector3::Zero();
-    base.angvel_ref = Vector3::Zero();
-    base.ori_ref = FromRollPitchYaw(base.angle_ref);
-
-    // --- ZMP補正変位初期化 ---
-    for (int i = 0; i < 2; ++i) {
-        dpos[i] = Vector3::Zero();
-        drot[i] = Vector3::Zero();
-        prev_force[i] = Vector3::Zero();
-    }
-}
-
 void Stabilizer::Update(const Timer& timer, const Param& param, Centroid& centroid, Base& base, vector<Foot>& foot){
 	// calc zmp from forces
     CalcZmp(param, centroid, foot);
@@ -305,18 +231,9 @@ void Stabilizer::Update(const Timer& timer, const Param& param, Centroid& centro
 	CalcDcmDynamics(timer, param, base, foot, theta, omega, centroid);
 
 	// calc desired force applied to CoM
-	// --- [重力ベクトル補正] 坂道対応 ---
-	// ロボットのZ軸方向に合わせて重力を補正（滑りを防ぐ）
-	Vector3 gravity_dir = base.ori_ref * Vector3(0.0, 0.0, -1.0);
-
-	// NOTE: slope_gain を調整することで徐々に適応可能（0.0〜1.0）
-	double slope_gain = 0.3;
-
-	Vector3 gravity_vec_inclined = param.gravity * gravity_dir;
-	Vector3 gravity_vec_flat     = Vector3(0.0, 0.0, param.gravity);
-	Vector3 gravity_vector = slope_gain * gravity_vec_inclined + (1.0 - slope_gain) * gravity_vec_flat;
-
-	centroid.force_ref = param.total_mass * (centroid.com_acc_ref + gravity_vector);
+	Vector3 gravity_world(0.0, 0.0, -param.gravity);
+	Vector3 gravity_local = base.ori.conjugate() * gravity_world;
+	centroid.force_ref = param.total_mass * (centroid.com_acc_ref - gravity_local);
 
 	centroid.moment_ref = Vector3(0.0, 0.0, 0.0);
 
@@ -337,7 +254,7 @@ void Stabilizer::Update(const Timer& timer, const Param& param, Centroid& centro
 			// feedback to desired foot pose
 			foot[i].pos_ref   += -dpos[i];
 			foot[i].angle_ref += -drot[i];
-      foot[i].ori_ref = FromRollPitchYaw(foot[i].angle_ref);
+            foot[i].ori_ref = FromRollPitchYaw(foot[i].angle_ref);
 		}
 	}
 
